@@ -1,0 +1,37 @@
+{
+  "title_keywords": [],
+  "location_keywords": [],
+  "exclude_title_keywords": [],
+  "public_sources": [
+    "arbeitnow",
+    "himalayas"
+  ],
+  "browser_boards": {
+    "LinkedIn": "linkedin.com/jobs",
+    "Indeed": "indeed.com",
+    "Naukri": "naukri.com",
+    "Foundit": "foundit.in",
+    "Glassdoor": "glassdoor.com",
+    "Shine": "shine.com",
+    "TimesJobs": "timesjobs.com",
+    "Instahyre": "instahyre.com",
+    "Wellfound": "wellfound.com",
+    "Cutshort": "cutshort.io",
+    "ZipRecruiter": "ziprecruiter.com",
+    "Dice": "dice.com",
+    "Reed": "reed.co.uk",
+    "Totaljobs": "totaljobs.com",
+    "Greenhouse": "greenhouse.io",
+    "Lever": "jobs.lever.co",
+    "Workday": "myworkdayjobs.com",
+    "Ashby": "jobs.ashbyhq.com",
+    "SmartRecruiters": "jobs.smartrecruiters.com"
+  },
+  "adzuna": {
+    "enabled": false,
+    "country": "",
+    "pages": 1
+  },
+  "boards": [],
+  "direct_jobs": []
+}

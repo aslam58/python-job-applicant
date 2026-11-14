@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.browser-profile/
+profile.json
+sources.json
+jobs.json
+jobs.csv
+application-log.json
+receipts/
+*.pdf
+*.docx
+.env
+.env.*
+*.searches.html
+.DS_Store

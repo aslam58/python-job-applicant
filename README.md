@@ -243,7 +243,7 @@ The page count applies to each role/location combination. Adzuna records enter t
 | Playwright browser executable missing | Run python -m playwright install chromium in the active environment |
 | Résumé not found | Check the file path. Use an absolute path or put the résumé beside profile.json |
 | No readable résumé text | Supply a text-based PDF, DOCX or TXT |
-| No results | Try shorter title phrases and alternate locations, then add relevant employer boards or use jobs.searches.html |
+| No results | Read the collected, title, location and exclusion counts. Open jobs.searches.html for major-board searches. Add sources that cover your required location |
 | A source failed | Check the reported source and connection. Results from other sources can still be available |
 | No recognizable application form | Open the actual form first. Some custom sites require manual filling |
 | JSON error | Check commas, double quotes and path escaping. Avoid trailing commas |
@@ -281,3 +281,34 @@ Tests cover feed parsing, filtering, résumé extraction and ranking, URL handli
 - [Himalayas API](https://himalayas.app/api)
 - [Arbeitnow API](https://www.arbeitnow.com/blog/job-board-api)
 - [Adzuna API](https://developer.adzuna.com/overview)
+
+## If the search saves zero matches
+
+The terminal now reports how many unique jobs were collected from each automatic source
+and how many remain after title, location and exclusion filters. The same information
+is saved under diagnostics in jobs.json.
+
+- Zero collected listings means the sources returned no usable records. Check reported errors.
+- Zero after title filtering means none of the fetched titles matched your phrases.
+- Zero after location filtering means matching titles had different location wording.
+- Zero after exclusions means the excluded title words removed every remaining match.
+
+Arbeitnow and Himalayas provide a limited sample of mainly European and remote jobs.
+With no employer boards configured and Adzuna disabled, local coverage can be sparse.
+Keep your required location and add relevant sources. Résumé ranking orders collected
+matches; it does not remove them for low overlap.
+
+To open the major-board search links page automatically after searching, run:
+
+```bash
+python job_applicant.py search --open-searches
+```
+
+To reuse saved preferences and résumé:
+
+```bash
+python job_applicant.py search --batch --open-searches
+```
+
+This opens one local page containing the search links. Choose a board link to review its
+indexed results. The links page can still be useful when the collected CSV has no rows.

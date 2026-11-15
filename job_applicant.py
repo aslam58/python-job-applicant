@@ -327,7 +327,11 @@ def profile_value(field, profile):
 FIELD_INFO = """el => {
   const by = (el.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean)
     .map(id => el.ownerDocument.getElementById(id)?.textContent || '').join(' ');
-  const labels = Array.from(el.labels || []).map(x => x.innerText).join(' ');
+  const labels = Array.from(el.labels || []).map(label => {
+    const copy = label.cloneNode(true);
+    copy.querySelectorAll('input, textarea, select, button').forEach(control => control.remove());
+    return copy.textContent || '';
+  }).join(' ');
   return {label: el.getAttribute('aria-label') || labels || by || el.placeholder || '',
     name: el.name || '', id: el.id || '', type: el.type || '', role: el.getAttribute('role') || '',
     tag: el.tagName.toLowerCase(), value: el.value || '', required: el.required || el.getAttribute('aria-required') === 'true'};
@@ -386,7 +390,9 @@ def autofill(page, profile, resume, scope=None):
                     uploaded += 1
                     print("Attached resume.")
                 continue
-            if not locator.is_visible() or not locator.is_enabled() or not locator.is_editable():
+            if not locator.is_visible() or not locator.is_enabled():
+                continue
+            if info["tag"] != "select" and not locator.is_editable():
                 continue
             if info["value"]:  # Preserve manual answers, defaults and parsed information for review.
                 continue

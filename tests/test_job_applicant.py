@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 spec = importlib.util.spec_from_file_location("job_applicant", Path(__file__).parents[1] / "job_applicant.py")
 app = importlib.util.module_from_spec(spec)
@@ -85,6 +85,22 @@ class ApplicantTests(unittest.TestCase):
             self.assertEqual(len(payload["errors"]), 1)
             self.assertTrue(output.with_suffix(".csv").exists())
             self.assertEqual(payload["jobs"][0]["status"], "not_verified")
+
+    def test_native_select_can_be_filled_when_not_text_editable(self):
+        field = MagicMock()
+        field.evaluate.return_value = {"label": "Country", "type": "select-one",
+                                       "tag": "select", "value": "", "required": True}
+        field.is_visible.return_value = True
+        field.is_enabled.return_value = True
+        field.is_editable.return_value = False
+        field.locator.return_value.evaluate_all.return_value = [
+            {"label": "Test country", "value": "test"}]
+        root = MagicMock()
+        root.locator.return_value.all.return_value = [field]
+        with patch.object(app, "form_scopes", return_value=[root]), patch("builtins.print"):
+            counts = app.autofill(MagicMock(), {"country": "Test country"}, None)
+        field.select_option.assert_called_once_with(value="test")
+        self.assertEqual(counts["filled"], 1)
 
     def test_log_preserves_history_without_profile(self):
         with tempfile.TemporaryDirectory() as tmp:

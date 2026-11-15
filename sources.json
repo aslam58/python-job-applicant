@@ -33,5 +33,8 @@
     "pages": 1
   },
   "boards": [],
-  "direct_jobs": []
+  "direct_jobs": [],
+  "india": {
+    "enabled": false
+  }
 }

@@ -381,3 +381,23 @@ Sources and API references
 - https://jobs.lever.co/cred
 - https://jobs.lever.co/smart-working-solutions
 - https://himalayas.app/api
+
+
+### Optional browser regression check
+
+After installing Chromium, set RUN_BROWSER_TESTS=1 and run the same test command to
+include a controlled local browser form check. On macOS/Linux:
+
+```bash
+RUN_BROWSER_TESTS=1 python -m unittest discover -s tests -v
+```
+
+On Windows Command Prompt:
+
+```bat
+set RUN_BROWSER_TESTS=1
+python -m unittest discover -s tests -v
+```
+
+This verifies native dropdown labels, existing-value preservation and a synthetic
+résumé upload on a local test form.

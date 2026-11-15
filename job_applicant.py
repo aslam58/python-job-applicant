@@ -8,6 +8,8 @@ import html
 import json
 import re
 import sys
+import webbrowser
+from collections import Counter
 from datetime import datetime, timezone
 
 from resume_match import read_resume, rank
@@ -180,17 +182,31 @@ def search(sources_path, output_path, *, settings=None, resume=None):
         validate_url(direct["url"])
         jobs.append({**direct, "id": direct.get("id", ""), "source": "direct",
                      "status": "not_verified", "description": direct.get("description", "")})
-    seen, selected = set(), []
+    seen, unique = set(), []
     for job in jobs:
         validate_url(job["url"])
         key = canonical_url(job["url"])
-        if key not in seen and matches(job, settings):
+        if key not in seen:
             seen.add(key)
-            selected.append(job)
+            unique.append(job)
+    title_settings = {**settings, "location_keywords": [], "exclude_title_keywords": []}
+    title_matches = [job for job in unique if matches(job, title_settings)]
+    location_settings = {**settings, "exclude_title_keywords": []}
+    location_matches = [job for job in title_matches if matches(job, location_settings)]
+    selected = [job for job in location_matches if matches(job, settings)]
+    diagnostics = {
+        "collected_unique": len(unique),
+        "by_source": dict(Counter(job["source"] for job in unique)),
+        "after_title_filter": len(title_matches),
+        "after_location_filter": len(location_matches),
+        "after_exclusions": len(selected),
+        "filters": {key: settings.get(key, []) for key in
+                    ("title_keywords", "location_keywords", "exclude_title_keywords")},
+    }
     if resume is not None:
         rank(selected, resume)
     links, search_page = write_search_page(settings, output_path)
-    payload = {"board_searches": links, "checked_at": datetime.now(timezone.utc).isoformat(), "jobs": selected, "errors": failures}
+    payload = {"diagnostics": diagnostics, "board_searches": links, "checked_at": datetime.now(timezone.utc).isoformat(), "jobs": selected, "errors": failures}
     save_json(output_path, payload)
     csv_path = Path(output_path).with_suffix(".csv")
     with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
@@ -206,6 +222,28 @@ def search(sources_path, output_path, *, settings=None, resume=None):
             print("     Source: " + job["source_url"])
     for failure in failures:
         print(f"Board failed: {failure['board']}: {failure['error']}", file=sys.stderr)
+    print(f"Collected {len(unique)} unique listings from automatic sources.")
+    for source, count in diagnostics["by_source"].items():
+        print(f"  {source}: {count}")
+    print(f"After title filter: {len(title_matches)}; after location filter: {len(location_matches)}; "
+          f"after exclusions: {len(selected)}.")
+    if not selected:
+        if not unique:
+            print("Automatic sources returned no usable listings. Check source errors and configuration.")
+        elif not title_matches:
+            print("No collected titles matched your title phrases. Try separate shorter phrases or spelling variants.")
+        elif not location_matches:
+            print("Titles matched, but none matched the listed location text. Check city/country wording.")
+        else:
+            print("All matching jobs were removed by your excluded title words.")
+        print("Default feeds cover a limited sample of mainly European and remote jobs.")
+        print("Major-board browser searches are separate from collected listings; zero collected matches "
+              "does not mean those boards have no jobs.")
+        if not settings.get("boards"):
+            print("No employer boards are configured. Add relevant Greenhouse/Lever boards for local openings.")
+        if not settings.get("adzuna", {}).get("enabled"):
+            print("Adzuna collection is disabled; you can enable it with your own credentials.")
+        print("Keep your required location. Add sources if current feeds do not cover it.")
     print(f"Major-board searches: {search_page.resolve()} (open this file in your browser).")
     print(f"Saved {len(selected)} matches to {output_path} and {csv_path}.")
     if not any(settings.get(k) for k in ("boards", "direct_jobs", "public_sources")):
@@ -468,8 +506,12 @@ def guided_search(args):
         save_json(profile_path, profile)
         save_json(args.sources, settings)
     result = search(args.sources, args.output, settings=settings, resume=resume_text)
-    if not result["jobs"]:
-        print("No results. Try shorter title phrases, alternate locations, or add employer boards in sources.json.")
+    if args.open_searches:
+        search_page = Path(args.output).with_suffix(".searches.html").resolve()
+        if not webbrowser.open(search_page.as_uri()):
+            print("Could not open a browser automatically. Double-click the .searches.html file.")
+    elif not result["jobs"]:
+        print("Open the .searches.html file, or rerun with --open-searches to open the search links page.")
     return 1 if result["errors"] and not result["jobs"] else 0
 
 
@@ -484,6 +526,7 @@ def main():
     find.add_argument("--profile", default="profile.json")
     find.add_argument("--resume", help="Resume file; relative paths use the profile folder")
     find.add_argument("--batch", action="store_true", help="Reuse saved settings without prompts")
+    find.add_argument("--open-searches", action="store_true", help="Open the generated major-board search links page")
     fill = sub.add_parser("apply", help="Open a job and interactively fill recognized application fields")
     fill.add_argument("--profile", default="profile.json")
     target = fill.add_mutually_exclusive_group(required=True)

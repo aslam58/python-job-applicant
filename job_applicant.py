@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from resume_match import read_resume, rank
 from board_search import BOARD_DOMAINS, adzuna_jobs, write_search_page
+from india_sources import effective_boards, india_search, normalize_location
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -30,6 +31,7 @@ SOURCES = {
     "public_sources": ["arbeitnow", "himalayas"],
     "browser_boards": BOARD_DOMAINS,
     "adzuna": {"enabled": False, "country": "", "pages": 1},
+    "india": {"enabled": False},
     "boards": [],
     "direct_jobs": [],
 }
@@ -115,6 +117,35 @@ def fetch_board(board, fetch=get_json):
                                           *(plain_text(item.get("content")) for item in j.get("lists", [])),
                                           j.get("additionalPlain") or ""]),
                  "source": kind, "status": "published_on_board"} for j in jobs]
+    if kind == "smartrecruiters":
+        jobs = []
+        pages = int(board.get("pages", 10))
+        if not 1 <= pages <= 20:
+            raise ValueError("SmartRecruiters pages must be between 1 and 20")
+        for page in range(pages):
+            params = {"limit": 100, "offset": page * 100}
+            if board.get("country"):
+                params["country"] = board["country"]
+            data = fetch(f"https://api.smartrecruiters.com/v1/companies/{quote(token)}/postings?" + urlencode(params))
+            rows = data.get("content", [])
+            for job in rows:
+                if job.get("visibility", "PUBLIC") != "PUBLIC":
+                    continue
+                loc = job.get("location", {})
+                location = loc.get("fullLocation") or ", ".join(
+                    str(loc.get(k) or "") for k in ("city", "region", "country") if loc.get(k))
+                if loc.get("country", "").casefold() == "in":
+                    location += " | India"
+                if loc.get("remote"):
+                    location += " | Remote"
+                jobs.append({"id": str(job["id"]), "title": job["name"], "company": company,
+                             "location": location, "description": "", "source": kind,
+                             "url": f"https://jobs.smartrecruiters.com/{quote(token)}/{quote(str(job['id']))}",
+                             "detail_url": f"https://api.smartrecruiters.com/v1/companies/{quote(token)}/postings/{quote(str(job['id']))}",
+                             "status": "published_on_board"})
+            if len(rows) < 100 or (page + 1) * 100 >= data.get("totalFound", (page + 2) * 100):
+                return jobs
+        raise ValueError("SmartRecruiters page limit reached. Narrow the board country or increase pages (up to 20).")
     raise ValueError(f"Unsupported board type: {kind}; use direct_jobs for other platforms")
 
 
@@ -125,15 +156,18 @@ def contains_phrase(value, phrase):
 
 def matches(job, settings):
     title, location = job["title"], job.get("location", "")
+    # Common title spelling variants retain the applicant's chosen phrase.
+    title = re.sub(r"full[ -]?stack", "full stack", title, flags=re.I)
     include = settings.get("title_keywords", [])
     places = settings.get("location_keywords", [])
+    location = normalize_location(location)
     exclude = settings.get("exclude_title_keywords", [])
-    return ((not include or any(contains_phrase(title, k) for k in include))
-            and (not places or any(contains_phrase(location, k) for k in places))
+    return ((not include or any(contains_phrase(title, re.sub(r"full[ -]?stack", "full stack", k, flags=re.I)) for k in include))
+            and (not places or any(contains_phrase(location, normalize_location(k)) for k in places))
             and not any(contains_phrase(title, k) for k in exclude))
 
 
-def public_jobs(provider, role="", fetch=get_json):
+def public_jobs(provider, role="", fetch=get_json, *, country="", page=1):
     if provider == "arbeitnow":
         data = fetch("https://www.arbeitnow.com/api/job-board-api")
         return [{"title": j["title"], "company": j["company_name"], "url": j["url"],
@@ -142,7 +176,10 @@ def public_jobs(provider, role="", fetch=get_json):
                  "status": "listed_on_feed"} for j in data["data"]]
     if provider != "himalayas":
         raise ValueError("Unknown public source: " + provider)
-    query = urlencode({"q": role, "page": 1})
+    params = {"q": role, "page": page}
+    if country:
+        params["country"] = country
+    query = urlencode(params)
     data = fetch("https://himalayas.app/jobs/api/search?" + query)
     now = datetime.now(timezone.utc).timestamp()
     jobs = []
@@ -160,11 +197,16 @@ def public_jobs(provider, role="", fetch=get_json):
 def search(sources_path, output_path, *, settings=None, resume=None):
     settings = load_json(sources_path) if settings is None else settings
     jobs, failures = [], []
+    if india_search(settings):
+        print("India coverage enabled: public employer preset and India-targeted Himalayas queries.")
     for provider in settings.get("public_sources", []):
         queries = (settings.get("title_keywords") or [""]) if provider == "himalayas" else [""]
         for query in queries:
             try:
-                jobs.extend(public_jobs(provider, query))
+                if provider == "himalayas" and india_search(settings):
+                    jobs.extend(public_jobs(provider, query, country="IN"))
+                else:
+                    jobs.extend(public_jobs(provider, query))
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 failures.append({"board": provider, "error": str(exc)})
                 break
@@ -173,7 +215,7 @@ def search(sources_path, output_path, *, settings=None, resume=None):
             jobs.extend(adzuna_jobs(settings))
         except (ValueError, OSError, KeyError, TypeError) as exc:
             failures.append({"board": "Adzuna", "error": str(exc)})
-    for board in settings.get("boards", []):
+    for board in effective_boards(settings):
         try:
             jobs.extend(fetch_board(board))
         except Exception as exc:
@@ -203,6 +245,17 @@ def search(sources_path, output_path, *, settings=None, resume=None):
         "filters": {key: settings.get(key, []) for key in
                     ("title_keywords", "location_keywords", "exclude_title_keywords")},
     }
+    for job in selected:
+        if job.get("detail_url"):
+            try:
+                detail = get_json(job["detail_url"])
+                sections = detail.get("jobAd", {}).get("sections", {})
+                job["description"] = " ".join(plain_text(section.get("text", ""))
+                                              for section in sections.values() if isinstance(section, dict))
+                if detail.get("applyUrl"):
+                    job["url"] = validate_url(detail["applyUrl"])
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                failures.append({"board": job["company"], "error": "Job detail unavailable: " + str(exc)})
     if resume is not None:
         rank(selected, resume)
     links, search_page = write_search_page(settings, output_path)
@@ -236,17 +289,17 @@ def search(sources_path, output_path, *, settings=None, resume=None):
             print("Titles matched, but none matched the listed location text. Check city/country wording.")
         else:
             print("All matching jobs were removed by your excluded title words.")
-        print("Default feeds cover a limited sample of mainly European and remote jobs.")
+        print("Coverage depends on enabled public feeds and employer boards.")
         print("Major-board browser searches are separate from collected listings; zero collected matches "
               "does not mean those boards have no jobs.")
-        if not settings.get("boards"):
+        if not effective_boards(settings):
             print("No employer boards are configured. Add relevant Greenhouse/Lever boards for local openings.")
         if not settings.get("adzuna", {}).get("enabled"):
             print("Adzuna collection is disabled; you can enable it with your own credentials.")
         print("Keep your required location. Add sources if current feeds do not cover it.")
     print(f"Major-board searches: {search_page.resolve()} (open this file in your browser).")
     print(f"Saved {len(selected)} matches to {output_path} and {csv_path}.")
-    if not any(settings.get(k) for k in ("boards", "direct_jobs", "public_sources")):
+    if not effective_boards(settings) and not any(settings.get(k) for k in ("direct_jobs", "public_sources")):
         print("Add employer boards or direct job URLs to sources.json first.")
     return payload
 
@@ -487,6 +540,8 @@ def guided_search(args):
     settings = load_json(args.sources) if Path(args.sources).exists() else dict(SOURCES)
     profile_path = Path(args.profile).resolve()
     profile = load_json(profile_path) if profile_path.exists() else dict(PROFILE)
+    if args.india:
+        settings["india"] = {**settings.get("india", {}), "enabled": True}
     saved = profile.get("resume_file", "")
     if args.batch:
         path = args.resume or saved
@@ -526,6 +581,7 @@ def main():
     find.add_argument("--profile", default="profile.json")
     find.add_argument("--resume", help="Resume file; relative paths use the profile folder")
     find.add_argument("--batch", action="store_true", help="Reuse saved settings without prompts")
+    find.add_argument("--india", action="store_true", help="Include the India employer preset and India-targeted remote queries")
     find.add_argument("--open-searches", action="store_true", help="Open the generated major-board search links page")
     fill = sub.add_parser("apply", help="Open a job and interactively fill recognized application fields")
     fill.add_argument("--profile", default="profile.json")

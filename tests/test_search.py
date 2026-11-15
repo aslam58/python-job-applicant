@@ -70,7 +70,12 @@ class SearchTests(unittest.TestCase):
             subprocess.run(command, input="lab technician\nParis\nlead\nresume.txt\n",
                            cwd=folder, text=True, capture_output=True, check=True)
             subprocess.run(command+["search", "--batch"], cwd=folder, capture_output=True, check=True)
-            rows = json.loads((folder/"jobs.json").read_text())["jobs"]
+            payload = json.loads((folder/"jobs.json").read_text())
+            self.assertEqual(payload["diagnostics"]["collected_unique"], 5)
+            self.assertEqual(payload["diagnostics"]["after_title_filter"], 4)
+            self.assertEqual(payload["diagnostics"]["after_location_filter"], 3)
+            self.assertEqual(payload["diagnostics"]["after_exclusions"], 2)
+            rows = payload["jobs"]
             self.assertEqual([r["description"] for r in rows], ["pipetting", "filing"])
             with (folder/"jobs.csv").open(encoding="utf-8-sig") as f:
                 self.assertEqual(list(csv.DictReader(f))[0]["matched_terms"], "pipetting")

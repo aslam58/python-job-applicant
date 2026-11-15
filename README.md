@@ -16,6 +16,7 @@ Keep these files together. Opening or copying only job_applicant.py will cause i
 python-job-applicant/
 ├── job_applicant.py
 ├── board_search.py
+├── india_sources.py
 ├── resume_match.py
 ├── requirements.txt
 ├── profile.json
@@ -92,6 +93,8 @@ The résumé is read locally for ranking. Only search preferences are used for o
 | --- | --- | --- |
 | Arbeitnow | Yes | Enabled by default. First feed page, mainly Europe |
 | Himalayas | Yes | Enabled by default. First page per title phrase, remote jobs |
+| India employer preset | Yes | Enabled automatically for recognized Indian locations, or with --india |
+| SmartRecruiters | Yes | Public postings, paginated by employer and optional country |
 | Greenhouse | Yes | Add each employer's board token |
 | Lever | Yes | Add each employer's board token |
 | Adzuna | Optional | Your API credentials and supported country required |
@@ -238,7 +241,7 @@ The page count applies to each role/location combination. Adzuna records enter t
 
 | Problem | What to do |
 | --- | --- |
-| Import board_search or resume_match could not be resolved | Extract the complete ZIP and open the folder containing all three Python files. Reload the editor if only its warning remains |
+| Import board_search or resume_match could not be resolved | Extract the complete ZIP and open the folder containing all Python files. Reload the editor if only its warning remains |
 | No module named playwright or pypdf | Activate .venv and run python -m pip install -r requirements.txt |
 | Playwright browser executable missing | Run python -m playwright install chromium in the active environment |
 | Résumé not found | Check the file path. Use an absolute path or put the résumé beside profile.json |
@@ -294,7 +297,8 @@ is saved under diagnostics in jobs.json.
 - Zero after exclusions means the excluded title words removed every remaining match.
 
 Arbeitnow and Himalayas provide a limited sample of mainly European and remote jobs.
-With no employer boards configured and Adzuna disabled, local coverage can be sparse.
+India searches also include the employer preset described below. Other local coverage
+depends on configured employer boards and optional Adzuna.
 Keep your required location and add relevant sources. Résumé ranking orders collected
 matches; it does not remove them for low overlap.
 
@@ -312,3 +316,68 @@ python job_applicant.py search --batch --open-searches
 
 This opens one local page containing the search links. Choose a board link to review its
 indexed results. The links page can still be useful when the collected CSV has no rows.
+
+## India job coverage
+
+India collection now works without an API key. Searches containing a recognized Indian
+city or India enable a public-employer preset automatically. Existing sources.json files
+also receive this behavior when the code is updated.
+
+The preset currently includes Freshworks, Bosch Group and Sopra Steria through
+SmartRecruiters, plus CRED and Smart Working Solutions through Lever. Each employer's
+public postings are fetched live, with the first three boards filtered to India.
+These five boards provide a starting catalog. They cover only those employers' published
+inventory and do not guarantee an opening for every skill or city.
+
+To force the preset on, including for a location the recognizer does not know, run:
+
+```bash
+python job_applicant.py search --india --open-searches
+```
+
+To reuse existing preferences and résumé:
+
+```bash
+python job_applicant.py search --batch --india --open-searches
+```
+
+Interactive runs save the explicit --india setting. Batch runs use it for that run only.
+The preset adds to the boards you configured, and duplicate board entries are removed.
+
+Location filters recognize Bangalore/Bengaluru, Gurgaon/Gurugram,
+Vizag/Visakhapatnam, Bombay/Mumbai, Madras/Chennai, Calcutta/Kolkata,
+Cochin/Kochi, Trivandrum/Thiruvananthapuram and Pondicherry/Puducherry.
+Full-stack, fullstack and full stack spellings match the same title phrase.
+
+Indian locations also make Himalayas query country=IN before local filtering.
+City filters still require that city in the posting. To include remote jobs labelled
+India or Worldwide, explicitly add Remote to location_keywords and review eligibility.
+
+SmartRecruiters board listings include location and title. Descriptions are fetched
+for selected matching jobs before résumé ranking. The default is up to 10 pages of
+100 records per configured SmartRecruiters board. A board reaching the cap reports
+an error instead of implying complete coverage. You can configure pages up to 20.
+
+To customize the India employer catalog, set india.boards to your own board array in
+sources.json. An empty array disables the preset boards while keeping your other sources.
+For example, this configuration selects one employer:
+
+```json
+"india": {
+  "enabled": true,
+  "boards": [
+    {"type": "smartrecruiters", "token": "Freshworks", "company": "Freshworks", "country": "in"}
+  ]
+}
+```
+
+The country field filters this SmartRecruiters board. Existing title, location and
+exclusion preferences remain in effect. No job preferences or applicant details
+have been filled in for you.
+
+Sources and API references
+- https://developers.smartrecruiters.com/docs/posting-api
+- https://careers.smartrecruiters.com/Freshworks
+- https://jobs.lever.co/cred
+- https://jobs.lever.co/smart-working-solutions
+- https://himalayas.app/api

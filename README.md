@@ -169,6 +169,9 @@ A recognized receipt message produces a screenshot and a log entry. Check for an
 
 | Command | Result |
 | --- | --- |
+| check N | Check whether tab N is showing security verification |
+| open | Navigate the last listed tab to an employer application URL you provide |
+| skip | Record the job as skipped and close this session |
 | fill N | Fill supported fields in tab N |
 | verify N | Look for known submission receipt text in tab N |
 | done | Record a receipt you personally observed after answering yes |
@@ -401,3 +404,38 @@ python -m unittest discover -s tests -v
 
 This verifies native dropdown labels, existing-value preservation and a synthetic
 résumé upload on a local test form.
+
+
+## Security verification and navigation timeouts
+
+The application browser uses a separate local profile. A job board may display a
+security verification page before showing the listing. Complete any verification
+in the browser, then enter `check N` in the terminal using the displayed tab number.
+If the page remains blocked, enter `open` and paste the employer's direct HTTPS
+application URL, or enter `skip` and run the apply command for another result.
+A navigation timeout returns control to the terminal after 30 seconds.
+Recognized verification pages are recorded as `needs_manual_verification` and
+are checked before filling fields. Other loading errors may still require manual review.
+
+`--job 1` selects the first entry in `jobs.json`. Editing or sorting `jobs.csv`
+does not change that numbering. The selected company and title are printed before
+opening the browser.
+
+## Separate applicants and private files
+
+Each applicant should keep their profile, sources, job results, browser session,
+logs and receipts in a separate directory. For example, from the repository folder:
+
+```bash
+python job_applicant.py init --directory users/applicant
+python job_applicant.py search --profile users/applicant/profile.json --sources users/applicant/sources.json --output users/applicant/jobs.json
+python job_applicant.py apply --profile users/applicant/profile.json --jobs users/applicant/jobs.json --job 1
+```
+
+Each applicant enters their own resume path and confirmed contact information.
+Role and location preferences are configurable. No applicant details are required
+in source code. Keep local profiles, resumes, generated results, screenshots and
+credentials out of commits and shared ZIP files. The `users/` directory is ignored.
+The repository's tracked JSON files are blank starter templates. Git ignore rules
+do not protect a file that is already tracked, so use a separate applicant directory
+for personal settings.

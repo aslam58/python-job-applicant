@@ -447,7 +447,7 @@ def log_result(path, url, status, receipt=None, screenshot=None):
 
 
 def apply(args):
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
     profile_path = Path(args.profile).resolve()
     profile = load_json(profile_path)
     url = args.url
@@ -455,7 +455,9 @@ def apply(args):
         jobs = load_json(args.jobs)["jobs"]
         if not args.job or not 1 <= args.job <= len(jobs):
             raise ValueError("Choose --job using the 1-based number printed by search, or provide --url")
-        url = jobs[args.job - 1]["url"]
+        selected = jobs[args.job - 1]
+        print(f"Selected job {args.job}: {selected.get('company', '')} | {selected.get('title', '')}")
+        url = selected["url"]
     validate_url(url)
     log_path = profile_path.parent / "application-log.json"
     if log_path.exists():
@@ -478,15 +480,23 @@ def apply(args):
     with sync_playwright() as pw:
         context = pw.chromium.launch_persistent_context(str(user_dir), headless=False)
         context.set_default_timeout(5000)
-        page = context.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page = context.pages[0] if context.pages else context.new_page()
         try:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except PlaywrightTimeoutError:
+                print("Navigation timed out. Inspect the browser, then use check, open, or skip.")
             while True:
                 print("\nTabs:")
                 pages = [p for p in context.pages if not p.is_closed()]
+                if not pages:
+                    print("All browser tabs were closed.")
+                    log_result(log_path, url, "awaiting_manual_completion")
+                    break
                 for i, tab in enumerate(pages, 1):
                     print(f"  {i}: {tab.title()} | {urlsplit(tab.url).hostname}")
-                command = input("Enter: fill [tab number], verify [tab number], done, or quit: ").strip().split()
+                print("If a tab shows security verification, complete it in the browser, then use check.")
+                command = input("Enter: check/fill/verify [tab number], open, skip, done, or quit: ").strip().split()
                 if not command:
                     continue
                 action = command[0].lower()
@@ -500,7 +510,19 @@ def apply(args):
                         break
                     print("Use verify to detect a receipt, or quit to record an unfinished application.")
                     continue
-                if action not in {"fill", "verify"}:
+                if action == "skip":
+                    log_result(log_path, url, "skipped_by_user")
+                    print("Recorded as skipped. Run apply --job NUMBER for another job.")
+                    break
+                if action == "open":
+                    destination = input("Paste the employer's application URL: ").strip()
+                    validate_url(destination)
+                    try:
+                        pages[-1].goto(destination, wait_until="domcontentloaded", timeout=30000)
+                    except PlaywrightTimeoutError:
+                        print("Navigation timed out. Inspect the browser before continuing.")
+                    continue
+                if action not in {"check", "fill", "verify"}:
                     print("Unknown command.")
                     continue
                 try:
@@ -511,6 +533,26 @@ def apply(args):
                     print("Choose a tab number from the list.")
                     continue
                 page = pages[index]
+                try:
+                    title = page.title().strip().lower()
+                    body = page.locator("body").inner_text(timeout=5000).lower()
+                except PlaywrightTimeoutError:
+                    print("Page is still loading. Inspect it, then use check again.")
+                    continue
+                blocked = title in {"just a moment...", "just a moment…", "attention required! | cloudflare"} or any(
+                    marker in body for marker in (
+                        "performing security verification", "verifying you are human",
+                        "verify you are human", "checking your browser before accessing",
+                    )
+                )
+                if blocked:
+                    log_result(log_path, url, "needs_manual_verification")
+                    print("Security verification detected. Complete it in the browser, then use check.")
+                    print("If it stays blocked, use open with the employer's direct application URL, or skip.")
+                    continue
+                if action == "check":
+                    print("No recognized verification page detected. Inspect the form before using fill.")
+                    continue
                 if action == "fill":
                     # Prevent accidental entry in unrelated pages opened during sign-in.
                     print(f"Target: {page.url}")

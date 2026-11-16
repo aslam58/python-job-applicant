@@ -13,3 +13,5 @@ receipts/
 .env.*
 *.searches.html
 .DS_Store
+
+users/

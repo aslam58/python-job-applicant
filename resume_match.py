@@ -57,12 +57,21 @@ TOKEN = re.compile(r"\.net\b|[^\W_]+(?:\+\+|#)?", re.UNICODE | re.I)
 
 def tokens(text):
     text = re.sub(r"https?://\S+|www\.\S+|\S+@\S+", " ", text, flags=re.I)
-    return {t for t in TOKEN.findall(text.casefold())
-            if t not in STOP and not t.isnumeric() and (len(t) > 1 or t in {"c", "r"})}
+    raw_words = TOKEN.findall(text.casefold())
+    words = {t for t in raw_words
+             if t not in STOP and not t.isnumeric() and (len(t) > 1 or t in {"c", "r"})}
+    # Keep source adjacency. Punctuation and line breaks delimit phrases.
+    bigrams = set()
+    for segment in re.split(r"[\r\n.!?;:,|•]+", text.casefold()):
+        adjacent = TOKEN.findall(segment)
+        bigrams.update(f"{a} {b}" for a, b in zip(adjacent, adjacent[1:])
+                       if a in words and b in words)
+    return words | bigrams
+
 
 
 def rank(jobs, resume):
-    """Weight shared words by rarity across the filtered listings; title hits count twice."""
+    """Weight shared words and bigrams by rarity across the filtered listings; title hits count twice."""
     words = tokens(resume)
     if not words:
         raise ValueError("The resume contains no usable search terms. Check the extracted document.")
@@ -78,6 +87,7 @@ def rank(jobs, resume):
         for term in words & vocabulary:
             rarity = 1 + math.log((1 + len(jobs)) / (1 + frequency[term]))
             overlap[term] = rarity * (2 if term in title else 1)
-        job["resume_score"] = round(sum(overlap.values()), 2)
+        norm = 1 + 0.05 * math.log1p(len(vocabulary))
+        job["resume_score"] = round(sum(overlap.values()) / norm, 2)
         job["matched_terms"] = sorted(overlap, key=lambda t: (-overlap[t], t))[:12]
     jobs.sort(key=lambda j: (-j["resume_score"], j["title"].casefold(), j["company"].casefold()))

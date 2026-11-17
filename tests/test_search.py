@@ -8,10 +8,17 @@ import zipfile
 from pathlib import Path
 
 import job_applicant as app
-from resume_match import read_resume, rank
+from resume_match import read_resume, rank, tokens
 
 
 class SearchTests(unittest.TestCase):
+    def test_phrase_matching_preserves_source_boundaries(self):
+        for value in ("Data\nEducation\nEngineer", "Data. Engineer", "Data and Engineer", "Data 2025 Engineer"):
+            with self.subTest(value=value):
+                self.assertNotIn("data engineer", tokens(value))
+        self.assertIn("data engineer", tokens("Experienced data engineer"))
+        self.assertIn("c++ robotics", tokens("C++ robotics"))
+
     def test_ranking_changes_with_resume(self):
         jobs = [{"title": "Technician", "company": "A", "description": "Pipetting and microscopy"},
                 {"title": "Technician", "company": "B", "description": "C++ robotics and PLC"}]

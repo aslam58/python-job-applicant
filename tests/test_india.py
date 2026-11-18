@@ -57,3 +57,12 @@ class IndiaTests(unittest.TestCase):
             return {"jobs": []}
         app.public_jobs("himalayas", "php", fetch, country="IN")
         self.assertIn("country=IN", urls[0])
+
+    def test_smartrecruiters_preserves_partial_board_and_reports_cap(self):
+        errors = []
+        rows = [{"id": idx, "name": "Designer"} for idx in range(99)] + [{}]
+        jobs = app.fetch_board({"type": "smartrecruiters", "token": "Test", "pages": 1},
+                               lambda url: {"content": rows, "totalFound": 110}, errors=errors)
+        self.assertEqual(len(jobs), 99)
+        self.assertEqual(len(errors), 2)
+        self.assertIn("page limit", errors[-1]["error"])

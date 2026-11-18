@@ -13,7 +13,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from resume_match import read_resume, rank
-from board_search import BOARD_DOMAINS, adzuna_jobs, write_search_page
+from board_search import BOARD_DOMAINS, adzuna_jobs, parse_listings, write_search_page
 from india_sources import effective_boards, india_search, normalize_location
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -29,6 +29,7 @@ PROFILE = {
 SOURCES = {
     "title_keywords": [], "location_keywords": [], "exclude_title_keywords": [],
     "public_sources": ["arbeitnow", "himalayas"],
+    "himalayas_pages": 3,
     "browser_boards": BOARD_DOMAINS,
     "adzuna": {"enabled": False, "country": "", "pages": 1},
     "india": {"enabled": False},
@@ -68,8 +69,12 @@ def save_json(path, data):
 
 
 def validate_url(url):
+    if not isinstance(url, str) or not url or any(c.isspace() or ord(c) < 32 for c in url):
+        raise ValueError("Expected a nonempty job URL without whitespace.")
     parts = urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+    # Accessing port also validates its syntax and range.
+    _ = parts.port
+    if parts.scheme != "https" or not parts.hostname or parts.username is not None or parts.password is not None:
         raise ValueError("Job URLs must be HTTPS and contain no embedded credentials.")
     return url
 
@@ -79,7 +84,8 @@ def canonical_url(url):
     tracking = {"source", "ref", "gh_src"}
     params = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
               if not k.lower().startswith("utm_") and k.lower() not in tracking]
-    return urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/"), urlencode(params), ""))
+    fragment = p.fragment if p.fragment.startswith(("/", "!/")) else ""
+    return urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/"), urlencode(params), fragment))
 
 
 def get_json(url):
@@ -92,7 +98,7 @@ def plain_text(value):
     return html.unescape(re.sub(r"<[^>]+>", " ", html.unescape(value or "")))
 
 
-def fetch_board(board, fetch=get_json):
+def fetch_board(board, fetch=get_json, *, errors=None):
     """Read published jobs only; never use submission APIs or employer API keys."""
     kind, token = board["type"], board["token"]
     if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
@@ -100,52 +106,67 @@ def fetch_board(board, fetch=get_json):
     company = board.get("company", token)
     if kind == "greenhouse":
         payload = fetch(f"https://boards-api.greenhouse.io/v1/boards/{quote(token)}/jobs?content=true")
-        return [{"id": str(j["id"]), "company": company, "title": j["title"],
-                 "location": j.get("location", {}).get("name", ""), "url": j["absolute_url"],
-                 "description": plain_text(j.get("content", "")), "source": kind,
-                 "status": "published_on_board"} for j in payload["jobs"]]
+
+        def greenhouse_listing(j):
+            return {"id": str(j["id"]), "company": company, "title": j["title"],
+                    "location": j.get("location", {}).get("name", ""), "url": j["absolute_url"],
+                    "description": plain_text(j.get("content", "")), "source": kind,
+                    "status": "published_on_board"}
+
+        return list(parse_listings(payload["jobs"], greenhouse_listing, company, errors))
     if kind == "lever":
         region = board.get("region", "global")
         if region not in {"global", "eu"}:
             raise ValueError("Lever region must be global or eu")
         host = "api.eu.lever.co" if region == "eu" else "api.lever.co"
         jobs = fetch(f"https://{host}/v0/postings/{quote(token)}?mode=json")
-        return [{"id": j["id"], "company": company, "title": j["text"],
-                 "location": j.get("categories", {}).get("location", ""),
-                 "url": j.get("applyUrl") or j["hostedUrl"],
-                 "description": " ".join([j.get("descriptionPlain") or plain_text(j.get("description", "")),
+
+        def lever_listing(j):
+            return {"id": j["id"], "company": company, "title": j["text"],
+                    "location": j.get("categories", {}).get("location", ""),
+                    "url": j.get("applyUrl") or j["hostedUrl"],
+                    "description": " ".join([j.get("descriptionPlain") or plain_text(j.get("description", "")),
                                           *(plain_text(item.get("content")) for item in j.get("lists", [])),
                                           j.get("additionalPlain") or ""]),
-                 "source": kind, "status": "published_on_board"} for j in jobs]
+                    "source": kind, "status": "published_on_board"}
+
+        return list(parse_listings(jobs, lever_listing, company, errors))
     if kind == "smartrecruiters":
         jobs = []
         pages = int(board.get("pages", 10))
         if not 1 <= pages <= 20:
             raise ValueError("SmartRecruiters pages must be between 1 and 20")
+
+        def smartrecruiters_listing(job):
+            if job.get("visibility", "PUBLIC") != "PUBLIC":
+                return None
+            loc = job.get("location", {})
+            location = loc.get("fullLocation") or ", ".join(
+                str(loc.get(k) or "") for k in ("city", "region", "country") if loc.get(k))
+            if loc.get("country", "").casefold() == "in":
+                location += " | India"
+            if loc.get("remote"):
+                location += " | Remote"
+            return {"id": str(job["id"]), "title": job["name"], "company": company,
+                    "location": location, "description": "", "source": kind,
+                    "url": f"https://jobs.smartrecruiters.com/{quote(token)}/{quote(str(job['id']))}",
+                    "detail_url": f"https://api.smartrecruiters.com/v1/companies/{quote(token)}/postings/{quote(str(job['id']))}",
+                    "status": "published_on_board"}
+
         for page in range(pages):
             params = {"limit": 100, "offset": page * 100}
             if board.get("country"):
                 params["country"] = board["country"]
             data = fetch(f"https://api.smartrecruiters.com/v1/companies/{quote(token)}/postings?" + urlencode(params))
             rows = data.get("content", [])
-            for job in rows:
-                if job.get("visibility", "PUBLIC") != "PUBLIC":
-                    continue
-                loc = job.get("location", {})
-                location = loc.get("fullLocation") or ", ".join(
-                    str(loc.get(k) or "") for k in ("city", "region", "country") if loc.get(k))
-                if loc.get("country", "").casefold() == "in":
-                    location += " | India"
-                if loc.get("remote"):
-                    location += " | Remote"
-                jobs.append({"id": str(job["id"]), "title": job["name"], "company": company,
-                             "location": location, "description": "", "source": kind,
-                             "url": f"https://jobs.smartrecruiters.com/{quote(token)}/{quote(str(job['id']))}",
-                             "detail_url": f"https://api.smartrecruiters.com/v1/companies/{quote(token)}/postings/{quote(str(job['id']))}",
-                             "status": "published_on_board"})
+            jobs.extend(parse_listings(rows, smartrecruiters_listing, company, errors))
             if len(rows) < 100 or (page + 1) * 100 >= data.get("totalFound", (page + 2) * 100):
                 return jobs
-        raise ValueError("SmartRecruiters page limit reached. Narrow the board country or increase pages (up to 20).")
+        message = f"SmartRecruiters page limit ({pages}) reached. More listings may exist."
+        if errors is None:
+            raise ValueError(message)
+        errors.append({"board": company, "error": message})
+        return jobs
     raise ValueError(f"Unsupported board type: {kind}; use direct_jobs for other platforms")
 
 
@@ -167,13 +188,19 @@ def matches(job, settings):
             and not any(contains_phrase(title, k) for k in exclude))
 
 
-def public_jobs(provider, role="", fetch=get_json, *, country="", page=1):
+def public_job_page(provider, role, fetch, country, page, errors):
+    """Return parsed jobs and the raw count before skipping expired or invalid rows."""
     if provider == "arbeitnow":
         data = fetch("https://www.arbeitnow.com/api/job-board-api")
-        return [{"title": j["title"], "company": j["company_name"], "url": j["url"],
-                 "location": j["location"] + (" | Remote" if j.get("remote") else ""),
-                 "description": plain_text(j["description"]), "source": provider,
-                 "status": "listed_on_feed"} for j in data["data"]]
+
+        def arbeitnow_listing(j):
+            return {"title": j["title"], "company": j["company_name"], "url": j["url"],
+                    "location": j["location"] + (" | Remote" if j.get("remote") else ""),
+                    "description": plain_text(j["description"]), "source": provider,
+                    "status": "listed_on_feed"}
+
+        rows = data["data"]
+        return list(parse_listings(rows, arbeitnow_listing, provider, errors)), len(rows)
     if provider != "himalayas":
         raise ValueError("Unknown public source: " + provider)
     params = {"q": role, "page": page}
@@ -182,52 +209,94 @@ def public_jobs(provider, role="", fetch=get_json, *, country="", page=1):
     query = urlencode(params)
     data = fetch("https://himalayas.app/jobs/api/search?" + query)
     now = datetime.now(timezone.utc).timestamp()
-    jobs = []
-    for j in data["jobs"]:
+
+    def himalayas_listing(j):
         if j.get("expiryDate") and float(j["expiryDate"]) <= now:
-            continue
+            return None
         places = ", ".join(j.get("locationRestrictions") or ["Worldwide"])
-        jobs.append({"title": j["title"], "company": j["companyName"],
-                     "url": j["applicationLink"], "source_url": j["guid"],
-                     "location": "Remote | " + places, "description": plain_text(j["description"]),
-                     "source": provider, "status": "listed_on_feed"})
+        return {"title": j["title"], "company": j["companyName"],
+                "url": j["applicationLink"], "source_url": j["guid"],
+                "location": "Remote | " + places, "description": plain_text(j["description"]),
+                "source": provider, "status": "listed_on_feed"}
+
+    rows = data["jobs"]
+    return list(parse_listings(rows, himalayas_listing, provider, errors)), len(rows)
+
+
+def public_jobs(provider, role="", fetch=get_json, *, country="", page=1):
+    jobs, _ = public_job_page(provider, role, fetch, country, page, None)
     return jobs
+
+
+def collect_public_jobs(settings, failures):
+    jobs = []
+    page_reports = []
+    for provider in settings.get("public_sources", []):
+        queries = [""]
+        limit = 1
+        country = ""
+        if provider == "himalayas":
+            queries = settings.get("title_keywords") or [""]
+            country = "IN" if india_search(settings) else ""
+            limit = settings.get("himalayas_pages", SOURCES["himalayas_pages"])
+            if type(limit) is not int or not 1 <= limit <= 10:
+                failures.append({"board": provider, "error": "himalayas_pages must be an integer from 1 to 10"})
+                continue
+        for query in queries:
+            pages_read = 0
+            capped = False
+            for page in range(1, limit + 1):
+                try:
+                    listings, raw_count = public_job_page(provider, query, get_json, country, page, failures)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    failures.append({"board": provider, "error": f"Query {query!r}, page {page}: {exc}"})
+                    break
+                jobs.extend(listings)
+                pages_read += 1
+                if provider != "himalayas" or raw_count < 20:
+                    break
+                capped = page == limit
+            if provider == "himalayas":
+                page_reports.append({"query": query, "pages_read": pages_read, "limit_reached": capped})
+                suffix = " (page limit reached)" if capped else ""
+                print(f"Himalayas query {query!r}: read {pages_read} page(s){suffix}.")
+    return jobs, page_reports
 
 
 def search(sources_path, output_path, *, settings=None, resume=None):
     settings = load_json(sources_path) if settings is None else settings
-    jobs, failures = [], []
+    failures = []
     if india_search(settings):
         print("India coverage enabled: public employer preset and India-targeted Himalayas queries.")
-    for provider in settings.get("public_sources", []):
-        queries = (settings.get("title_keywords") or [""]) if provider == "himalayas" else [""]
-        for query in queries:
-            try:
-                if provider == "himalayas" and india_search(settings):
-                    jobs.extend(public_jobs(provider, query, country="IN"))
-                else:
-                    jobs.extend(public_jobs(provider, query))
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                failures.append({"board": provider, "error": str(exc)})
-                break
+    jobs, page_reports = collect_public_jobs(settings, failures)
     if settings.get("adzuna", {}).get("enabled"):
         try:
-            jobs.extend(adzuna_jobs(settings))
+            jobs.extend(adzuna_jobs(settings, errors=failures))
         except (ValueError, OSError, KeyError, TypeError) as exc:
             failures.append({"board": "Adzuna", "error": str(exc)})
     for board in effective_boards(settings):
         try:
-            jobs.extend(fetch_board(board))
+            jobs.extend(fetch_board(board, errors=failures))
         except Exception as exc:
             failures.append({"board": board.get("company", board.get("token", "")), "error": str(exc)})
-    for direct in settings.get("direct_jobs", []):
-        validate_url(direct["url"])
-        jobs.append({**direct, "id": direct.get("id", ""), "source": "direct",
-                     "status": "not_verified", "description": direct.get("description", "")})
+
+    def direct_listing(row):
+        return {**row, "id": row.get("id", ""), "source": "direct", "status": "not_verified",
+                "description": row.get("description", "")}
+
+    jobs.extend(parse_listings(settings.get("direct_jobs", []), direct_listing, "direct", failures))
     seen, unique = set(), []
     for job in jobs:
-        validate_url(job["url"])
-        key = canonical_url(job["url"])
+        try:
+            key = canonical_url(validate_url(job.get("url")))
+            job.setdefault("location", "")
+            job.setdefault("description", "")
+            for field in ("company", "title", "location", "description"):
+                if not isinstance(job.get(field), str):
+                    raise ValueError(f"Expected text for {field}")
+        except ValueError as exc:
+            failures.append({"board": job["source"], "error": f"Skipped listing {job.get('title', '')!r}: {exc}"})
+            continue
         if key not in seen:
             seen.add(key)
             unique.append(job)
@@ -237,6 +306,7 @@ def search(sources_path, output_path, *, settings=None, resume=None):
     location_matches = [job for job in title_matches if matches(job, location_settings)]
     selected = [job for job in location_matches if matches(job, settings)]
     diagnostics = {
+        "himalayas_pages": page_reports,
         "collected_unique": len(unique),
         "by_source": dict(Counter(job["source"] for job in unique)),
         "after_title_filter": len(title_matches),
@@ -272,9 +342,9 @@ def search(sources_path, output_path, *, settings=None, resume=None):
         if resume is not None:
             print("     Resume overlap: " + (", ".join(job["matched_terms"]) or "no shared keywords"))
         if job.get("source_url"):
-            print("     Source: " + job["source_url"])
+            print(f"     Source: {job['source_url']}")
     for failure in failures:
-        print(f"Board failed: {failure['board']}: {failure['error']}", file=sys.stderr)
+        print(f"Source issue: {failure['board']}: {failure['error']}", file=sys.stderr)
     print(f"Collected {len(unique)} unique listings from automatic sources.")
     for source, count in diagnostics["by_source"].items():
         print(f"  {source}: {count}")
@@ -446,26 +516,35 @@ def log_result(path, url, status, receipt=None, screenshot=None):
     save_json(path, rows)
 
 
+def confirm_receipt(employer, url):
+    print(f"Application: {employer or urlsplit(url).hostname} | {url}")
+    return input("Did you personally see the employer's submission receipt for this job? Type yes or no: ").strip().lower() == "yes"
+
+
 def apply(args):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
     profile_path = Path(args.profile).resolve()
     profile = load_json(profile_path)
     url = args.url
+    employer = None
     if not url:
         jobs = load_json(args.jobs)["jobs"]
         if not args.job or not 1 <= args.job <= len(jobs):
             raise ValueError("Choose --job using the 1-based number printed by search, or provide --url")
         selected = jobs[args.job - 1]
         print(f"Selected job {args.job}: {selected.get('company', '')} | {selected.get('title', '')}")
+        employer = selected.get("company")
         url = selected["url"]
     validate_url(url)
     log_path = profile_path.parent / "application-log.json"
     if log_path.exists():
         previous = load_json(log_path)
-        if any(canonical_url(r["job_url"]) == canonical_url(url) and r["status"] in
-               {"submitted_signal_detected", "submitted_by_user"} for r in previous):
+        statuses = {r["status"] for r in previous if canonical_url(r["job_url"]) == canonical_url(url)}
+        if "submitted_by_user" in statuses:
             print("This URL already has a submitted entry in application-log.json. Not reopening it.")
             return
+        if "submitted_signal_detected" in statuses:
+            print("An earlier session detected possible receipt text. Check the employer history before applying again.")
     resume = None
     if profile.get("resume_file"):
         resume = Path(profile["resume_file"]).expanduser()
@@ -504,8 +583,7 @@ def apply(args):
                     log_result(log_path, url, "awaiting_manual_completion")
                     break
                 if action == "done":
-                    answer = input("Did you personally see the employer's submission receipt? Type yes or no: ").strip().lower()
-                    if answer == "yes":
+                    if confirm_receipt(employer, url):
                         log_result(log_path, url, "submitted_by_user")
                         break
                     print("Use verify to detect a receipt, or quit to record an unfinished application.")
@@ -562,11 +640,15 @@ def apply(args):
                 else:
                     receipt = evidence(page)
                     if receipt:
+                        print(f"Tab {index + 1}: {page.url} | Matched text: {receipt}")
+                        if not confirm_receipt(employer, url):
+                            print("Application is still open for review.")
+                            continue
                         folder = profile_path.parent / "receipts"
                         folder.mkdir(exist_ok=True)
                         shot = folder / (datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".png")
                         page.screenshot(path=str(shot), full_page=False)
-                        log_result(log_path, url, "submitted_signal_detected", receipt, str(shot))
+                        log_result(log_path, url, "submitted_by_user", receipt, str(shot))
                         print(f"Receipt text detected: {receipt}. Saved screenshot and log. Check remaining employer tasks.")
                         break
                     print("No known receipt text detected. Complete any remaining steps; do not assume success.")

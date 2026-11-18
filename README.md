@@ -19,8 +19,6 @@ python-job-applicant/
 ├── india_sources.py
 ├── resume_match.py
 ├── requirements.txt
-├── profile.json
-├── sources.json
 └── tests/
 ```
 
@@ -165,7 +163,7 @@ After you personally submit the application, return to the terminal.
 verify 2
 ```
 
-A recognized receipt message produces a screenshot and a log entry. Check for any remaining screening tasks. Receipt matching can miss unfamiliar wording or match misleading text.
+When verify finds possible receipt text, it shows the application, tab URL, and matched phrase. Answer yes only if you personally see a receipt for this job. Confirming saves a screenshot and records the submission. Any other answer returns you to the open session.
 
 | Command | Result |
 | --- | --- |
@@ -177,7 +175,7 @@ A recognized receipt message produces a screenshot and a log entry. Check for an
 | done | Record a receipt you personally observed after answering yes |
 | quit | Record the application as unfinished and close the session |
 
-The log is saved in application-log.json and screenshots in receipts/. Submitted URLs already in the log are skipped. Different URLs for the same job can still need a manual duplicate check.
+The log is saved in application-log.json and screenshots in receipts/. URLs you personally confirmed as submitted are skipped. Older entries marked submitted_signal_detected display a reminder and allow reopening. Different URLs for the same job can still need a manual duplicate check.
 
 ## Add employer boards and direct jobs
 
@@ -291,8 +289,13 @@ Tests cover feed parsing, filtering, résumé extraction and ranking, URL handli
 ## If the search saves zero matches
 
 The terminal now reports how many unique jobs were collected from each automatic source
-and how many remain after title, location and exclusion filters. The same information
+and how many remain after title, location and exclusion filters. Invalid listings are skipped individually and recorded under errors. The same information
 is saved under diagnostics in jobs.json.
+
+Himalayas searches up to three pages per title phrase by default. Set the integer
+`himalayas_pages` in sources.json from 1 to 10 to change the limit. The terminal and
+`diagnostics.himalayas_pages` show how many pages were read for each query and whether
+a full last page reached the configured limit.
 
 - Zero collected listings means the sources returned no usable records. Check reported errors.
 - Zero after title filtering means none of the fetched titles matched your phrases.
@@ -359,7 +362,7 @@ India or Worldwide, explicitly add Remote to location_keywords and review eligib
 SmartRecruiters board listings include location and title. Descriptions are fetched
 for selected matching jobs before résumé ranking. The default is up to 10 pages of
 100 records per configured SmartRecruiters board. A board reaching the cap reports
-an error instead of implying complete coverage. You can configure pages up to 20.
+a warning and keeps the listings already collected. You can configure pages up to 20.
 
 To customize the India employer catalog, set india.boards to your own board array in
 sources.json. An empty array disables the preset boards while keeping your other sources.
@@ -436,6 +439,4 @@ Each applicant enters their own resume path and confirmed contact information.
 Role and location preferences are configurable. No applicant details are required
 in source code. Keep local profiles, resumes, generated results, screenshots and
 credentials out of commits and shared ZIP files. The `users/` directory is ignored.
-The repository's tracked JSON files are blank starter templates. Git ignore rules
-do not protect a file that is already tracked, so use a separate applicant directory
-for personal settings.
+The init command and interactive search generate profile.json and sources.json locally.

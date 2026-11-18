@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import job_applicant as app
 from resume_match import read_resume, rank, tokens
@@ -98,3 +99,54 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertIn("q=designer&page=1", urls[0])
         self.assertIn("Worldwide", jobs[0]["location"])
+
+    def test_rejects_individual_rows_and_preserves_hash_routes_in_nested_output(self):
+        base = {"company": "Example", "title": "Designer"}
+        urls = ["https://example.org/#/jobs/1", "https://example.org/#/jobs/2",
+                "https://example.org/#!/jobs/3", "https://example.org/", "https://example.org/#apply",
+                "http://example.org/job", None, "https://example.org:bad/job"]
+        settings = {"direct_jobs": [{**base, "url": url} for url in urls] + [None, base]}
+        with tempfile.TemporaryDirectory() as tmp, patch("builtins.print"):
+            output = Path(tmp) / "new" / "jobs.json"
+            payload = app.search(None, output, settings=settings, resume="designer")
+            self.assertEqual({j["url"] for j in payload["jobs"]}, set(urls[:4]))
+            self.assertEqual(len(payload["errors"]), 5)
+            self.assertEqual({e["board"] for e in payload["errors"]}, {"direct"})
+            self.assertEqual(app.load_json(output), payload)
+            self.assertTrue(output.with_suffix(".searches.html").is_file())
+            self.assertTrue(output.with_suffix(".csv").is_file())
+
+    def search_himalayas(self, pages, limit=3):
+        settings = {"public_sources": ["himalayas"], "title_keywords": ["Designer"],
+                    "location_keywords": ["France"], "himalayas_pages": limit}
+        with tempfile.TemporaryDirectory() as tmp, patch("builtins.print"), \
+                patch.object(app, "get_json", side_effect=pages) as fetch:
+            result = app.search(None, Path(tmp) / "jobs.json", settings=settings)
+        return result, [call.args[0] for call in fetch.call_args_list]
+
+    def test_himalayas_finds_match_after_expired_page_and_bad_sibling(self):
+        match = {"title": "Designer", "companyName": "Example", "description": "",
+                 "applicationLink": "https://example.org/job", "guid": "https://example.org/source",
+                 "locationRestrictions": ["France"]}
+        result, urls = self.search_himalayas([{"jobs": [{"expiryDate": 1}] * 20},
+                                              {"jobs": [{}, match]}])
+        self.assertEqual([job["url"] for job in result["jobs"]], [match["applicationLink"]])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["board"], "himalayas")
+        self.assertTrue(urls[1].endswith("q=Designer&page=2"))
+        self.assertEqual(result["diagnostics"]["himalayas_pages"],
+                         [{"query": "Designer", "pages_read": 2, "limit_reached": False}])
+
+    def test_himalayas_cap_or_failed_next_page_preserves_first_page(self):
+        match = {"title": "Designer", "companyName": "Example", "description": "",
+                 "applicationLink": "https://example.org/job", "guid": "https://example.org/source",
+                 "locationRestrictions": ["France"]}
+        full = {"jobs": [match] * 20}
+        for limit, responses, capped in [(1, [full], True), (3, [full, OSError("Unavailable")], False)]:
+            with self.subTest(limit=limit):
+                result, urls = self.search_himalayas(responses, limit)
+                self.assertEqual(len(result["jobs"]), 1)
+                self.assertEqual(len(urls), len(responses))
+                self.assertEqual(bool(result["errors"]), not capped)
+                self.assertEqual(result["diagnostics"]["himalayas_pages"][0],
+                                 {"query": "Designer", "pages_read": 1, "limit_reached": capped})

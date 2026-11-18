@@ -44,6 +44,7 @@ def write_search_page(settings, output):
         label = " | ".join(x for x in (link["board"], link["role"], link["location"]) if x)
         rows.append('<li><a target="_blank" rel="noopener" href="' +
                     html.escape(link["url"], quote=True) + '">' + html.escape(label) + '</a></li>')
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text('<!doctype html><html lang="en"><meta charset="utf-8">'
                       '<title>Job board searches</title><body><h1>Search job boards</h1>'
                       '<p>Open a search below. These are indexed web searches. Check the employer page '
@@ -53,7 +54,32 @@ def write_search_page(settings, output):
     return links, output
 
 
-def adzuna_jobs(settings):
+def parse_listings(rows, parse, source, errors):
+    """Keep sibling listings when an individual provider record is malformed."""
+    if not isinstance(rows, list):
+        raise ValueError(f"{source} did not return a list of jobs")
+    for index, row in enumerate(rows, 1):
+        try:
+            if not isinstance(row, dict):
+                raise ValueError("expected a job object")
+            job = parse(row)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            if errors is None:
+                raise
+            errors.append({"board": source, "error": f"Skipped listing {index}: {exc}"})
+            continue
+        if job is not None:
+            yield job
+
+
+def adzuna_listing(row):
+    return {"title": row["title"], "company": row.get("company", {}).get("display_name", ""),
+            "location": row.get("location", {}).get("display_name", ""),
+            "url": row["redirect_url"], "description": row.get("description", ""),
+            "source": "Adzuna", "source_url": "https://www.adzuna.com", "status": "listed_on_feed"}
+
+
+def adzuna_jobs(settings, *, errors=None):
     config = settings.get("adzuna", {})
     country = config.get("country", "")
     if not re.fullmatch("[a-z]{2}", country):
@@ -78,12 +104,7 @@ def adzuna_jobs(settings):
                     # Request errors may include API credentials in their URL.
                     raise ValueError("Adzuna request failed. Check country, credentials, quota and connection.") from None
                 results = data.get("results", [])
-                for row in results:
-                    jobs.append({"title": row["title"], "company": row.get("company", {}).get("display_name", ""),
-                                 "location": row.get("location", {}).get("display_name", ""),
-                                 "url": row["redirect_url"], "description": row.get("description", ""),
-                                 "source": "Adzuna", "source_url": "https://www.adzuna.com",
-                                 "status": "listed_on_feed"})
+                jobs.extend(parse_listings(results, adzuna_listing, "Adzuna", errors))
                 if len(results) < 50:
                     break
     return jobs

@@ -2,10 +2,13 @@
   "title_keywords": [],
   "location_keywords": [],
   "exclude_title_keywords": [],
+  "description_keywords": [],
   "public_sources": [
     "arbeitnow",
     "himalayas"
   ],
+  "arbeitnow_pages": 1,
+  "himalayas_pages": 3,
   "browser_boards": {
     "LinkedIn": "linkedin.com/jobs",
     "Indeed": "indeed.com",
